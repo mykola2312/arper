@@ -146,28 +146,6 @@ ssize_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
     // TODO: timeout
 }
 
-#define ARP_HW_ETHER        0x0001
-#define ARP_PT_IP           0x0800
-
-#define ARP_OP_REQUEST      1
-#define ARP_OP_REPLY        2
-
-// Inverse ARP
-#define INARP_OP_REQUEST    8
-#define INART_OP_REPLY      9
-
-typedef struct arp_packet_s {
-    uint16_t hrd;           // Hardware address space (e.g., Ethernet, Packet Radio Net.)
-    uint16_t pro;           // Protocol address space.  For Ethernet hardware, this is from the set of type fields ether_typ$<protocol>.
-    uint8_t hln;            // byte length of each hardware address
-    uint8_t pln;            // byte length of each protocol address
-    uint16_t op;            // opcode (ares_op$REQUEST | ares_op$REPLY)
-    uint8_t sha[ETH_ALEN];  // Hardware address of sender of this packet
-    uint8_t spa[4];         // Protocol address of sender of this packet
-    uint8_t tha[ETH_ALEN];  // Hardware address of sender of this packet
-    uint8_t tpa[4];         // Protocol address of sender of this packet
-} __attribute__((packed)) arp_packet_t;
-
 int main(int argc, char** argv) {
     // ifname hostMAC gatewayMAC targetMAC
     struct linkinterface* link = link_open(argv[1]);
@@ -179,43 +157,6 @@ int main(int argc, char** argv) {
 
     uint8_t target[ETH_ALEN];
     parse_mac(argv[2], target);
-
-    uint8_t ip[4] = {192, 168, 100, 3};
-
-    // test InARP send
-    // arp_packet_t arp;
-    // arp.hrd = htons(ARP_HW_ETHER);
-    // arp.pro = htons(ARP_PT_IP);
-    // arp.hln = ETH_ALEN;
-    // arp.pln = 4;
-    // arp.op = htons(INARP_OP_REQUEST);
-    // memcpy(arp.sha, link->host, ETH_ALEN);
-    // memcpy(arp.spa, ip, 4);
-    // memcpy(arp.tha, target, ETH_ALEN);
-    // memset(arp.tpa, '\0', 4);
-    uint8_t targetIp[4] = {192, 168, 100, 4};
-
-    arp_packet_t arp;
-    arp.hrd = htons(ARP_HW_ETHER);
-    arp.pro = htons(ARP_PT_IP);
-    arp.hln = ETH_ALEN;
-    arp.pln = 4;
-    arp.op = htons(ARP_OP_REQUEST);
-    memcpy(arp.sha, link->host, ETH_ALEN);
-    memcpy(arp.spa, ip, 4);
-    memset(arp.tha, '\0', ETH_ALEN);
-    memcpy(arp.tpa, targetIp, 4);
-
-
-    const uint8_t broadcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-    // ssize_t sent = link_send(link, ETHERTYPE_ARP, (uint8_t*)&arp, sizeof(arp));
-    // printf("sent %ld\n", sent);
-
-    // sent = link_send(link, target, ETHERTYPE_ARP, (uint8_t*)&arp, sizeof(arp));
-    // printf("sent %ld\n", sent);
-
-    ssize_t sent = link_send(link, broadcast, ETHERTYPE_ARP, (uint8_t*)&arp, sizeof(arp));
-    printf("sent %ld\n", sent);
 
     link_free(link);
     return 0;
