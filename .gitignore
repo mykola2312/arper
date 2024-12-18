@@ -3,4 +3,5 @@ CMakeFiles
 CMakeCache.txt
 Makefile
 *.cmake
+build/
 arper
