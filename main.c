@@ -92,7 +92,15 @@ ssize_t link_send(struct linkinterface* link, uint16_t type, uint8_t* packet, si
     memcpy(ether->ether_dhost, link->gateway, ETH_ALEN);
     ether->ether_type = htons(type);
 
-    return send(link->fd, packet, len, 0);
+    struct sockaddr_ll ll_addr = {0};
+    ll_addr.sll_family = PF_PACKET;
+    //ll_addr.sll_protocol = htons(type);
+    ll_addr.sll_ifindex = link->if_idx;
+    ll_addr.sll_halen = ETH_ALEN;
+    memcpy(ll_addr.sll_addr, link->gateway, ETH_ALEN);
+
+    return sendto(link->fd, packet, len, 0,
+        (const struct sockaddr*)&ll_addr, sizeof(ll_addr));
 }
 
 ssize_t link_recv(struct linkinterface* link, uint16_t type, uint8_t* packet, size_t len) {
@@ -166,8 +174,8 @@ int main(int argc, char** argv) {
     arp_packet_t arp;
     arp.hrd = htons(ARP_HW_ETHER);
     arp.pro = htons(ARP_PT_IP);
-    arp.hln = htons(ETH_ALEN);
-    arp.pln = htons(4);
+    arp.hln = ETH_ALEN;
+    arp.pln = 4;
     arp.op = htons(INARP_OP_REQUEST);
     memcpy(arp.sha, link->host, ETH_ALEN);
     memcpy(arp.spa, ip, 4);
