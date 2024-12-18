@@ -80,6 +80,43 @@ typedef struct arp_packet_s {
 #define ARP_OP_REQUEST      0x01
 #define ARP_OP_REPLY        0x02
 
+int link_send(struct linkinterface* link, uint16_t type, uint8_t* packet, size_t len) {
+    struct ether_header* ether = (struct ether_header*)packet;
+    memcpy(ether->ether_shost, link->host, ETH_ALEN);
+    memcpy(ether->ether_dhost, link->gateway, ETH_ALEN);
+    ether->ether_type = htons(type);
+
+    return send(link->fd, packet, len, 0);
+}
+
+int link_recv(struct linkinterface* link, uint16_t type, uint8_t* packet, size_t len) {
+    char buffer[MTU];
+    uint16_t want_type = htons(type);
+    do {
+        ssize_t rd = recv(link->fd, buffer, MTU, 0);
+        if (rd < 0) return -1;
+
+        struct ether_header* ether = (struct ether_header*)buffer;
+        // check received packet's source MAC
+        // if its someone else than gateway - skip
+        if (memcmp(ether->ether_shost, link->gateway, ETH_ALEN)) {
+            continue; // not our gateway
+        }
+        if (memcmp(ether->ether_dhost, link->host, ETH_ALEN)) {
+            continue; // not our host
+        }
+        if (ether->ether_type != want_type) {
+            continue; // not wanted type
+        }
+
+        // copy packet to recv buffer
+        memcpy(packet, buffer, rd);
+        return rd;
+    } while (1);
+
+    // TODO: timeout
+}
+
 int main(int argc, char** argv) {
     // ifname hostMAC gatewayMAC targetMAC
     struct linkinterface* link = link_parse(argv[1], argv[2], argv[3]);
