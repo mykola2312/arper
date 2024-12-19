@@ -185,6 +185,32 @@ uint16_t checksum(const uint8_t* data, size_t len) {
     return ~((uint16_t)sum);
 }
 
+ssize_t ip_send(struct linkinterface* link, const uint8_t* dstAddr,
+    const uint8_t* dstIp, uint8_t proto, frame_t frame, size_t len)
+{
+    // shift data to add space for IP header
+    size_t iplen = sizeof(struct ip) + len;
+    frame = realloc(frame, iplen);
+    memmove((uint8_t*)frame + sizeof(struct ip), frame, len);
+    // create IP packet
+    struct ip* ip = (struct ip*)frame;
+    ip->ip_v = 4;
+    ip->ip_hl = sizeof(struct ip) / 4;
+    ip->ip_tos = 0;
+    ip->ip_len = htons(iplen);
+    ip->ip_id = (uint16_t)rand();
+    ip->ip_off = 0;
+    ip->ip_ttl = 64;
+    ip->ip_p = proto;
+    ip->ip_sum = 0;
+    memcpy(&ip->ip_src, link->host_ip, 4);
+    memcpy(&ip->ip_dst, dstIp, 4);
+    // calculate header checksum
+    ip->ip_sum = htons(checksum((const uint8_t*)frame, sizeof(struct ip)));
+
+    return link_send(link, dstAddr, ETHERTYPE_IP, frame, iplen);
+}
+
 int main(int argc, char** argv) {
     // ifname targetMAC
     struct linkinterface* link = link_open(argv[1]);
@@ -201,17 +227,22 @@ int main(int argc, char** argv) {
     uint16_t id = (uint16_t)rand();
 
     // ICMP request
-    struct icmphdr icmp;
-    icmp.type = ICMP_ECHO;
-    icmp.code = 0;
-    icmp.checksum = 0;
-    icmp.un.echo.id = (uint16_t)rand();
-    icmp.un.echo.sequence = 1;
+    struct icmphdr* icmp = frame_new(sizeof(struct icmphdr));
+    icmp->type = ICMP_ECHO;
+    icmp->code = 0;
+    icmp->checksum = 0;
+    icmp->un.echo.id = (uint16_t)rand();
+    icmp->un.echo.sequence = 1;
     // calculate checksum
-    icmp.checksum = htons(checksum((const uint8_t*)&icmp, sizeof(icmp)));
+    icmp->checksum = htons(checksum(
+        (const uint8_t*)&icmp, sizeof(struct icmphdr)));
 
     // IPv4 local broadcast
     uint8_t ip_broadcast[4] = {255, 255, 255, 255};
+
+    ssize_t sent = ip_send(link, target, ip_broadcast,
+        IPPROTO_ICMP, icmp, sizeof(struct icmphdr));
+    printf("sent %ld\n", sent);
 
     link_free(link);
     return 0;
