@@ -1,4 +1,5 @@
 #define _DEFAULT_SOURCE
+#include <time.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -8,10 +9,12 @@
 #include <sys/param.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <net/ethernet.h>
 #include <linux/if_packet.h>
+#include <net/if.h>
+#include <net/ethernet.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
 
 #define FRAME_MIN_LEN 64
 #define MTU 1500
@@ -44,6 +47,20 @@ struct linkinterface {
     int fd; // raw socket
     int if_idx;
 };
+
+typedef void* frame_t;
+
+frame_t frame_new(size_t datalen) {
+    return malloc(datalen);
+}
+
+frame_t frame_full() {
+    return malloc(MTU);
+}
+
+void frame_free(frame_t frame) {
+    free(frame);
+}
 
 struct linkinterface* link_open(const char* if_name) {
     struct linkinterface* link = (struct linkinterface*)malloc(sizeof(struct linkinterface));
@@ -88,20 +105,20 @@ void link_free(struct linkinterface* link) {
 }
 
 ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
-    uint16_t type, uint8_t* packet, size_t len)
+    uint16_t type, frame_t frame, size_t len)
 {
     // ETHER FRAME MUST NOT BE LESS THAN 64 (60)
     size_t frame_len = MAX(60, len + sizeof(struct ether_header));
-    uint8_t* frame = (uint8_t*)malloc(frame_len);
-    memset(frame, '\0', frame_len);
+    // add space for ether header and shift user data
+    frame = realloc(frame, frame_len);
+    memmove((uint8_t*)frame + sizeof(struct ether_header), frame, len);
+    //uint8_t* frame = (uint8_t*)malloc(frame_len);
+    //memset(frame, '\0', frame_len);
 
     struct ether_header* ether = (struct ether_header*)frame;
     memcpy(ether->ether_shost, link->host, ETH_ALEN);
     memcpy(ether->ether_dhost, dstAddr, ETH_ALEN);
     ether->ether_type = htons(type);
-
-    // copy packet data
-    memcpy(frame + sizeof(struct ether_header), packet, len);
 
     struct sockaddr_ll ll_addr = {0};
     ll_addr.sll_family = PF_PACKET;
@@ -117,15 +134,14 @@ ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
 }
 
 ssize_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
-    uint16_t type, uint8_t* packet, size_t len)
+    uint16_t type, frame_t frame, size_t len)
 {
-    char buffer[MTU];
     uint16_t want_type = htons(type);
     do {
-        ssize_t rd = recv(link->fd, buffer, MTU, 0);
+        ssize_t rd = recv(link->fd, frame, len, 0);
         if (rd < 0) return -1;
 
-        struct ether_header* ether = (struct ether_header*)buffer;
+        struct ether_header* ether = (struct ether_header*)frame;
         // check received packet's source MAC
         // if its someone else than source - skip
         if (memcmp(ether->ether_shost, srcAddr, ETH_ALEN)) {
@@ -138,16 +154,24 @@ ssize_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
             continue; // not wanted type
         }
 
-        // copy packet to recv buffer
-        memcpy(packet, buffer, rd);
         return rd;
     } while (1);
 
     // TODO: timeout
 }
 
+uint16_t checksum(const uint8_t* data, size_t len) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i < len / 2; i++) {
+        sum += *((const uint16_t*)data + i);
+        sum += sum >> 16;
+    }
+
+    return ~((uint16_t)sum);
+}
+
 int main(int argc, char** argv) {
-    // ifname hostMAC gatewayMAC targetMAC
+    // ifname targetMAC
     struct linkinterface* link = link_open(argv[1]);
     if (!link) {
         perror("link_open");
@@ -157,6 +181,24 @@ int main(int argc, char** argv) {
 
     uint8_t target[ETH_ALEN];
     parse_mac(argv[2], target);
+
+    srand(time(NULL));
+    uint16_t id = (uint16_t)rand();
+
+    // ICMP request
+    struct icmphdr icmp;
+    icmp.type = ICMP_ECHO;
+    icmp.code = 0;
+    icmp.checksum = 0;
+    icmp.un.echo.id = (uint16_t)rand();
+    icmp.un.echo.sequence = 1;
+    // calculate checksum
+    icmp.checksum = htons(checksum((const uint8_t*)&icmp, sizeof(icmp)));
+
+    printf("%lu\n", sizeof(struct ip));
+
+    // IPv4 local broadcast
+    uint8_t ip_broadcast[4] = {255, 255, 255, 255};
 
     link_free(link);
     return 0;
