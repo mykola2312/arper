@@ -43,6 +43,7 @@ struct linkinterface {
     socklen_t if_len;
 
     uint8_t host[ETH_ALEN];
+    uint8_t host_ip[4];
 
     int fd; // raw socket
     int if_idx;
@@ -91,6 +92,14 @@ struct linkinterface* link_open(const char* if_name) {
         goto _bad1;
     }
     memcpy(link->host, netlink.ifr_ifru.ifru_hwaddr.sa_data, ETH_ALEN); // MAC
+    // get interface IP address
+    memset(&netlink, '\0', sizeof(netlink));
+    strncpy(netlink.ifr_ifrn.ifrn_name, link->if_name, IFNAMSIZ-1);
+    netlink.ifr_ifru.ifru_addr.sa_family = PF_INET;
+    if (ioctl(link->fd, SIOCGIFADDR, &netlink) < 0) {
+        goto _bad1;
+    }
+    memcpy(link->host_ip, &((struct sockaddr_in*)&netlink.ifr_ifru.ifru_addr)->sin_addr, 4);
 
     return link;
 _bad1:
@@ -134,7 +143,7 @@ ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
     return sent;
 }
 
-ssize_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
+size_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
     uint16_t type, frame_t frame, size_t len)
 {
     uint16_t want_type = htons(type);
@@ -155,7 +164,12 @@ ssize_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
             continue; // not wanted type
         }
 
-        return rd;
+        // shift back ether header and realloc
+        size_t datalen = rd - sizeof(struct ether_header);
+        memmove(frame, (const uint8_t*)frame + sizeof(struct ether_header), datalen);
+        frame = realloc(frame, datalen);
+
+        return datalen;
     } while (1);
 
     // TODO: timeout
@@ -195,8 +209,6 @@ int main(int argc, char** argv) {
     icmp.un.echo.sequence = 1;
     // calculate checksum
     icmp.checksum = htons(checksum((const uint8_t*)&icmp, sizeof(icmp)));
-
-    printf("%lu\n", sizeof(struct ip));
 
     // IPv4 local broadcast
     uint8_t ip_broadcast[4] = {255, 255, 255, 255};
