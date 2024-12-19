@@ -179,7 +179,7 @@ uint16_t checksum(const uint8_t* data, size_t len) {
     uint32_t sum = 0;
     for (size_t i = 0; i < len / 2; i++) {
         sum += *((const uint16_t*)data + i);
-        sum += sum >> 16;
+        sum = (sum >> 16) + (sum & 0xFFFF);
     }
 
     return ~((uint16_t)sum);
@@ -227,21 +227,25 @@ int main(int argc, char** argv) {
     uint16_t id = (uint16_t)rand();
 
     // ICMP request
-    struct icmphdr* icmp = frame_new(sizeof(struct icmphdr));
+    size_t hdrlen = sizeof(struct icmphdr);
+    size_t payloadlen = 32;
+
+    struct icmphdr* icmp = frame_new(hdrlen + payloadlen);
     icmp->type = ICMP_ECHO;
     icmp->code = 0;
     icmp->checksum = 0;
     icmp->un.echo.id = (uint16_t)rand();
     icmp->un.echo.sequence = 1;
+    // set payload
+    memset(icmp + 1, 69, payloadlen);
     // calculate checksum
-    icmp->checksum = htons(checksum(
-        (const uint8_t*)&icmp, sizeof(struct icmphdr)));
+    icmp->checksum = checksum((const uint8_t*)icmp, hdrlen + payloadlen);
 
     // IPv4 local broadcast
     uint8_t ip_broadcast[4] = {255, 255, 255, 255};
 
     ssize_t sent = ip_send(link, target, ip_broadcast,
-        IPPROTO_ICMP, icmp, sizeof(struct icmphdr));
+        IPPROTO_ICMP, icmp, hdrlen + payloadlen);
     printf("sent %ld\n", sent);
 
     link_free(link);
