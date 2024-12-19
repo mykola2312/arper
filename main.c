@@ -51,11 +51,14 @@ struct linkinterface {
 typedef void* frame_t;
 
 frame_t frame_new(size_t datalen) {
-    return malloc(datalen);
+    frame_t frame = malloc(datalen);
+    memset(frame, '\0', datalen);
+
+    return frame;
 }
 
 frame_t frame_full() {
-    return malloc(MTU);
+    return frame_new(MTU);
 }
 
 void frame_free(frame_t frame) {
@@ -112,8 +115,6 @@ ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
     // add space for ether header and shift user data
     frame = realloc(frame, frame_len);
     memmove((uint8_t*)frame + sizeof(struct ether_header), frame, len);
-    //uint8_t* frame = (uint8_t*)malloc(frame_len);
-    //memset(frame, '\0', frame_len);
 
     struct ether_header* ether = (struct ether_header*)frame;
     memcpy(ether->ether_shost, link->host, ETH_ALEN);
