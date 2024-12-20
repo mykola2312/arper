@@ -38,7 +38,7 @@ void print_mac(uint8_t* mac) {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-struct linkinterface {
+typedef struct {
     char* if_name;
     socklen_t if_len;
 
@@ -47,7 +47,7 @@ struct linkinterface {
 
     int fd; // raw socket
     int if_idx;
-};
+} linkinterface_t;
 
 typedef struct {
     uint16_t id;
@@ -74,8 +74,8 @@ void frame_free(frame_t* frame) {
     free(frame);
 }
 
-struct linkinterface* link_open(const char* if_name) {
-    struct linkinterface* link = (struct linkinterface*)malloc(sizeof(struct linkinterface));
+linkinterface_t* link_open(const char* if_name) {
+    linkinterface_t* link = (linkinterface_t*)malloc(sizeof(linkinterface_t));
     link->if_name = strdup(if_name);
     link->if_len = strlen(link->if_name);
 
@@ -118,13 +118,13 @@ _bad0:
     return NULL;
 }
 
-void link_free(struct linkinterface* link) {
+void link_free(linkinterface_t* link) {
     close(link->fd);
     free(link->if_name);
     free(link);
 }
 
-ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
+ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
     uint16_t type, frame_t* frame)
 {
     // ETHER FRAME MUST NOT BE LESS THAN 64 (60)
@@ -151,7 +151,7 @@ ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
     return sent;
 }
 
-size_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
+size_t link_recv(linkinterface_t* link, const uint8_t* srcAddr,
     uint16_t type, frame_t* frame)
 {
     uint16_t want_type = htons(type);
@@ -193,7 +193,7 @@ uint16_t checksum(const uint8_t* data, size_t len) {
     return ~((uint16_t)sum);
 }
 
-ssize_t ip_send(struct linkinterface* link, const uint8_t* dstAddr,
+ssize_t ip_send(linkinterface_t* link, const uint8_t* dstAddr,
     const uint8_t* dstIp, uint8_t proto, frame_t* frame)
 {
     // shift data to add space for IP header
@@ -222,7 +222,7 @@ ssize_t ip_send(struct linkinterface* link, const uint8_t* dstAddr,
 
 int main(int argc, char** argv) {
     // ifname targetMAC
-    struct linkinterface* link = link_open(argv[1]);
+    linkinterface_t* link = link_open(argv[1]);
     if (!link) {
         perror("link_open");
         return 1;
