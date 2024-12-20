@@ -220,6 +220,32 @@ ssize_t ip_send(linkinterface_t* link, const uint8_t* dstAddr,
     return link_send(link, dstAddr, ETHERTYPE_IP, frame);
 }
 
+ssize_t icmp_direct_broadcast(linkinterface_t* link, const uint8_t* dstAddr, uint16_t seq) {
+    size_t hdrlen = sizeof(struct icmphdr);
+    const size_t payloadlen = 20;
+
+    frame_t* frame = frame_new(hdrlen + payloadlen);
+    struct icmphdr* icmp = (struct icmphdr*)frame->data;
+    icmp->type = ICMP_ECHO;
+    icmp->code = 0;
+    icmp->checksum = 0;
+    icmp->un.echo.id = htons(frame->id);
+    icmp->un.echo.sequence = htons(seq);
+
+    uint8_t* payload = (uint8_t*)frame->data + hdrlen;
+    for (unsigned i = 0; i < payloadlen; i++) {
+        payload[i] = rand() % 256;
+    }
+
+    icmp->checksum = checksum((const uint8_t*)frame->data, hdrlen + payloadlen);
+
+    const uint8_t ip_broadcast[4] = {255, 255, 255, 255};
+    size_t sent = ip_send(link, dstAddr, ip_broadcast, IPPROTO_ICMP, frame);
+    
+    frame_free(frame);
+    return sent;
+}
+
 int main(int argc, char** argv) {
     // ifname targetMAC
     linkinterface_t* link = link_open(argv[1]);
@@ -233,39 +259,10 @@ int main(int argc, char** argv) {
     parse_mac(argv[2], target);
 
     srand(time(NULL));
-    uint16_t id = (uint16_t)rand();
 
-    // ICMP request
-    size_t hdrlen = sizeof(struct icmphdr);
-    size_t payloadlen = 20;
-
-    frame_t* frame = frame_new(hdrlen + payloadlen);
-    struct icmphdr* icmp = (struct icmphdr*)frame->data;
-    icmp->type = ICMP_ECHO;
-    icmp->code = 0;
-    icmp->checksum = 0;
-    icmp->un.echo.id = htons(frame->id);
-    icmp->un.echo.sequence = 0;
-    // set payload
-    //struct timespec ts;
-    //clock_gettime(CLOCK_REALTIME, &ts);
-    
-    uint8_t* payload = (uint8_t*)icmp + hdrlen; 
-    for (uint8_t i = 0; i < payloadlen; i++) {
-        payload[i] = i;
-    }
-    //memcpy(payload, &ts, sizeof(struct timespec));
-
-    // calculate checksum
-    icmp->checksum = checksum((const uint8_t*)icmp, hdrlen + payloadlen);
-
-    // IPv4 local broadcast
-    uint8_t ip_broadcast[4] = {255, 255, 255, 255};
-
-    ssize_t sent = ip_send(link, target, ip_broadcast, IPPROTO_ICMP, frame);
+    ssize_t sent = icmp_direct_broadcast(link, target, 0);
     printf("sent %ld\n", sent);
 
-    frame_free(frame);
     link_free(link);
     return 0;
 }
