@@ -49,20 +49,28 @@ struct linkinterface {
     int if_idx;
 };
 
-typedef void* frame_t;
+typedef struct {
+    uint16_t id;
+    void* data;
+    size_t datalen;
+} frame_t;
 
-frame_t frame_new(size_t datalen) {
-    frame_t frame = malloc(datalen);
-    memset(frame, '\0', datalen);
+frame_t* frame_new(size_t datalen) {
+    frame_t* frame = (frame_t*)malloc(sizeof(frame_t));
+    frame->id = (uint16_t)rand();
+    frame->data = malloc(datalen);
+    frame->datalen = datalen;
 
+    memset(frame->data, '\0', frame->datalen);
     return frame;
 }
 
-frame_t frame_full() {
+frame_t* frame_full() {
     return frame_new(MTU);
 }
 
-void frame_free(frame_t frame) {
+void frame_free(frame_t* frame) {
+    free(frame->data);
     free(frame);
 }
 
@@ -117,15 +125,16 @@ void link_free(struct linkinterface* link) {
 }
 
 ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
-    uint16_t type, frame_t frame, size_t len)
+    uint16_t type, frame_t* frame)
 {
     // ETHER FRAME MUST NOT BE LESS THAN 64 (60)
-    size_t frame_len = MAX(60, len + sizeof(struct ether_header));
+    size_t oldlen = frame->datalen;
+    frame->datalen = MAX(60, frame->datalen + sizeof(struct ether_header));
     // add space for ether header and shift user data
-    frame = realloc(frame, frame_len);
-    memmove((uint8_t*)frame + sizeof(struct ether_header), frame, len);
+    frame->data = realloc(frame->data, frame->datalen);
+    memmove((uint8_t*)frame->data + sizeof(struct ether_header), frame->data, oldlen);
 
-    struct ether_header* ether = (struct ether_header*)frame;
+    struct ether_header* ether = (struct ether_header*)frame->data;
     memcpy(ether->ether_shost, link->host, ETH_ALEN);
     memcpy(ether->ether_dhost, dstAddr, ETH_ALEN);
     ether->ether_type = htons(type);
@@ -136,22 +145,21 @@ ssize_t link_send(struct linkinterface* link, const uint8_t* dstAddr,
     ll_addr.sll_halen = ETH_ALEN;
     memcpy(ll_addr.sll_addr, dstAddr, ETH_ALEN);
 
-    size_t sent = sendto(link->fd, frame, frame_len, 0,
+    size_t sent = sendto(link->fd, frame->data, frame->datalen, 0,
         (const struct sockaddr*)&ll_addr, sizeof(ll_addr));
-    free(frame);
     
     return sent;
 }
 
 size_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
-    uint16_t type, frame_t frame, size_t len)
+    uint16_t type, frame_t* frame)
 {
     uint16_t want_type = htons(type);
     do {
-        ssize_t rd = recv(link->fd, frame, len, 0);
+        ssize_t rd = recv(link->fd, frame->data, frame->datalen, 0);
         if (rd < 0) return -1;
 
-        struct ether_header* ether = (struct ether_header*)frame;
+        struct ether_header* ether = (struct ether_header*)frame->data;
         // check received packet's source MAC
         // if its someone else than source - skip
         if (memcmp(ether->ether_shost, srcAddr, ETH_ALEN)) {
@@ -165,11 +173,11 @@ size_t link_recv(struct linkinterface* link, const uint8_t* srcAddr,
         }
 
         // shift back ether header and realloc
-        size_t datalen = rd - sizeof(struct ether_header);
-        memmove(frame, (const uint8_t*)frame + sizeof(struct ether_header), datalen);
-        frame = realloc(frame, datalen);
+        memmove(frame->data, (const uint8_t*)frame->data + sizeof(struct ether_header), frame->datalen);
+        frame->datalen = rd - sizeof(struct ether_header);
+        frame = realloc(frame->data, frame->datalen);
 
-        return datalen;
+        return frame->datalen;
     } while (1);
 
     // TODO: timeout
@@ -186,19 +194,20 @@ uint16_t checksum(const uint8_t* data, size_t len) {
 }
 
 ssize_t ip_send(struct linkinterface* link, const uint8_t* dstAddr,
-    const uint8_t* dstIp, uint8_t proto, frame_t frame, size_t len)
+    const uint8_t* dstIp, uint8_t proto, frame_t* frame)
 {
     // shift data to add space for IP header
-    size_t iplen = sizeof(struct ip) + len;
-    frame = realloc(frame, iplen);
-    memmove((uint8_t*)frame + sizeof(struct ip), frame, len);
+    size_t oldlen = frame->datalen;
+    frame->datalen = sizeof(struct ip) + frame->datalen;
+    frame->data = realloc(frame->data, frame->datalen);
+    memmove((uint8_t*)frame->data + sizeof(struct ip), frame->data, oldlen);
     // create IP packet
-    struct ip* ip = (struct ip*)frame;
+    struct ip* ip = (struct ip*)frame->data;
     ip->ip_v = 4;
     ip->ip_hl = sizeof(struct ip) / 4;
     ip->ip_tos = 0;
-    ip->ip_len = htons(iplen);
-    ip->ip_id = (uint16_t)rand();
+    ip->ip_len = htons(frame->datalen);
+    ip->ip_id = htons(frame->id);
     ip->ip_off = 0;
     ip->ip_ttl = 64;
     ip->ip_p = proto;
@@ -206,9 +215,9 @@ ssize_t ip_send(struct linkinterface* link, const uint8_t* dstAddr,
     memcpy(&ip->ip_src, link->host_ip, 4);
     memcpy(&ip->ip_dst, dstIp, 4);
     // calculate header checksum
-    ip->ip_sum = htons(checksum((const uint8_t*)frame, sizeof(struct ip)));
+    ip->ip_sum = checksum((const uint8_t*)frame->data, sizeof(struct ip));
 
-    return link_send(link, dstAddr, ETHERTYPE_IP, frame, iplen);
+    return link_send(link, dstAddr, ETHERTYPE_IP, frame);
 }
 
 int main(int argc, char** argv) {
@@ -228,26 +237,35 @@ int main(int argc, char** argv) {
 
     // ICMP request
     size_t hdrlen = sizeof(struct icmphdr);
-    size_t payloadlen = 32;
+    size_t payloadlen = 20;
 
-    struct icmphdr* icmp = frame_new(hdrlen + payloadlen);
+    frame_t* frame = frame_new(hdrlen + payloadlen);
+    struct icmphdr* icmp = (struct icmphdr*)frame->data;
     icmp->type = ICMP_ECHO;
     icmp->code = 0;
     icmp->checksum = 0;
-    icmp->un.echo.id = (uint16_t)rand();
-    icmp->un.echo.sequence = 1;
+    icmp->un.echo.id = htons(frame->id);
+    icmp->un.echo.sequence = 0;
     // set payload
-    memset(icmp + 1, 69, payloadlen);
+    //struct timespec ts;
+    //clock_gettime(CLOCK_REALTIME, &ts);
+    
+    uint8_t* payload = (uint8_t*)icmp + hdrlen; 
+    for (uint8_t i = 0; i < payloadlen; i++) {
+        payload[i] = i;
+    }
+    //memcpy(payload, &ts, sizeof(struct timespec));
+
     // calculate checksum
     icmp->checksum = checksum((const uint8_t*)icmp, hdrlen + payloadlen);
 
     // IPv4 local broadcast
     uint8_t ip_broadcast[4] = {255, 255, 255, 255};
 
-    ssize_t sent = ip_send(link, target, ip_broadcast,
-        IPPROTO_ICMP, icmp, hdrlen + payloadlen);
+    ssize_t sent = ip_send(link, target, ip_broadcast, IPPROTO_ICMP, frame);
     printf("sent %ld\n", sent);
 
+    frame_free(frame);
     link_free(link);
     return 0;
 }
