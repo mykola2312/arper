@@ -1,3 +1,3 @@
 # arper
 
-resolve MAC by IP
+resolve IP by MAC
