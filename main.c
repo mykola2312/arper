@@ -17,7 +17,6 @@
 #include <netinet/ip_icmp.h>
 
 #define FRAME_MIN_LEN 64
-#define MTU 1500
 
 void parse_mac(const char* str, uint8_t* mac) {
     char* s = strdup(str);
@@ -47,6 +46,7 @@ typedef struct {
 
     int fd; // raw socket
     int if_idx;
+    int if_mtu;
 } linkinterface_t;
 
 typedef struct {
@@ -65,8 +65,8 @@ frame_t* frame_new(size_t datalen) {
     return frame;
 }
 
-frame_t* frame_full() {
-    return frame_new(MTU);
+frame_t* frame_full(linkinterface_t* link) {
+    return frame_new(link->if_mtu);
 }
 
 void frame_free(frame_t* frame) {
@@ -108,6 +108,13 @@ linkinterface_t* link_open(const char* if_name) {
         goto _bad1;
     }
     memcpy(link->host_ip, &((struct sockaddr_in*)&netlink.ifr_ifru.ifru_addr)->sin_addr, 4);
+    // get interface MTU
+    memset(&netlink, '\0', sizeof(netlink));
+    strncpy(netlink.ifr_ifrn.ifrn_name, link->if_name, IFNAMSIZ-1);
+    if (ioctl(link->fd, SIOCGIFMTU, &netlink) < 0) {
+        goto _bad1;
+    }
+    link->if_mtu = netlink.ifr_ifru.ifru_mtu;
 
     return link;
 _bad1:
@@ -151,20 +158,36 @@ ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
     return sent;
 }
 
-size_t link_recv(linkinterface_t* link, const uint8_t* srcAddr,
-    uint16_t type, frame_t* frame)
+size_t link_recv_any_from(linkinterface_t* link, 
+    const uint8_t** srcAddrs, unsigned addrNum,
+    uint16_t type, frame_t* frame, unsigned timeoutMilis,
+    const uint8_t* matchAddr)
 {
+    clock_t beginTime = clock();
+    clock_t deadline = beginTime + timeoutMilis;
+
     uint16_t want_type = htons(type);
     do {
         ssize_t rd = recv(link->fd, frame->data, frame->datalen, 0);
         if (rd < 0) return -1;
 
+        if (clock() > deadline) return 0; // TIMEOUT
+
         struct ether_header* ether = (struct ether_header*)frame->data;
-        // check received packet's source MAC
-        // if its someone else than source - skip
-        if (memcmp(ether->ether_shost, srcAddr, ETH_ALEN)) {
-            continue; // not our source
+        
+        unsigned matches = 0;
+        for (unsigned i = 0; i < addrNum; i++) {
+            if (!memcmp(ether->ether_shost, srcAddrs[i], ETH_ALEN)) {
+                matches = 1;
+
+                if (matchAddr) {
+                    memcpy(matchAddr, ether->ether_shost, ETH_ALEN);
+                }
+                break;
+            }
         }
+        if (!matches) continue;
+
         if (memcmp(ether->ether_dhost, link->host, ETH_ALEN)) {
             continue; // not our host
         }
@@ -173,14 +196,12 @@ size_t link_recv(linkinterface_t* link, const uint8_t* srcAddr,
         }
 
         // shift back ether header and realloc
-        memmove(frame->data, (const uint8_t*)frame->data + sizeof(struct ether_header), frame->datalen);
         frame->datalen = rd - sizeof(struct ether_header);
+        memmove(frame->data, (const uint8_t*)frame->data + sizeof(struct ether_header), frame->datalen);
         frame = realloc(frame->data, frame->datalen);
 
         return frame->datalen;
     } while (1);
-
-    // TODO: timeout
 }
 
 uint16_t checksum(const uint8_t* data, size_t len) {
@@ -246,6 +267,34 @@ ssize_t icmp_direct_broadcast(linkinterface_t* link, const uint8_t* dstAddr, uin
     return sent;
 }
 
+// 0 - no match, 1 - matched
+unsigned icmp_match(linkinterface_t* link, const uint8_t** srcAddrs, unsigned addrNum,
+    unsigned timeoutMillis,
+    uint8_t* matchAddr, uint8_t* matchIp)
+{
+    frame_t* frame = frame_full(link);
+    size_t recv = link_recv_any_from(link, srcAddrs, addrNum,
+        ETHERTYPE_IP, frame, timeoutMillis, matchAddr);
+    if (recv < 1) goto _match_bad1;
+
+    // we got matching Ethernet frame, let's check IP
+    const struct ip* ip = (const struct ip*)frame->data;
+    if (memcmp(ip->ip_dst.s_addr, link->host_ip, 4)) {
+        // not originated to our host IP
+        goto _match_bad1;
+    }
+
+    if (ip->ip_p != IPPROTO_ICMP) {
+        goto _match_bad1;
+    }
+
+    // shift IP header, check ICMP
+    
+_match_bad1:
+    frame_free(frame);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     // ifname targetMAC
     linkinterface_t* link = link_open(argv[1]);
@@ -254,6 +303,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     print_mac(link->host);
+    printf("MTU: %d\n", link->if_mtu);
 
     uint8_t target[ETH_ALEN];
     parse_mac(argv[2], target);
@@ -262,6 +312,11 @@ int main(int argc, char** argv) {
 
     ssize_t sent = icmp_direct_broadcast(link, target, 0);
     printf("sent %ld\n", sent);
+
+    const uint8_t testMac[6] = {11, 22, 33, 44, 55, 66}; 
+
+    frame_t* test = frame_full(link);
+    printf("recv %lu\n", link_recv(link, testMac, ETHERTYPE_IP, test, 5000));
 
     link_free(link);
     return 0;
