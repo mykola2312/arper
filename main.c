@@ -324,18 +324,22 @@ _match_bad1:
     return 0;
 }
 
-// returns number of resolved IP addresses. `resolvedIps` must be capacity of addrNum,
-// IPs set in the same order as targetAddrs ordered
-unsigned icmp_resolve(linkinterface_t* link,
+typedef struct {
+    mac_t addr;
+    ip4addr_t ip;
+} mac_ip_t;
+
+mac_ip_t* icmp_resolve(linkinterface_t* link,
     const mac_t* targetAddrs, unsigned addrNum,
     unsigned timeoutSec,
-    ip4addr_t* resolvedIps)
+    unsigned* resolvedNum)
 {
+    mac_ip_t* output = NULL;
     unsigned resolved = 0;
     // sent ICMP packets
     for (unsigned i = 0; i < addrNum; i++) {
         if (icmp_direct_broadcast(link, &targetAddrs[i], 0) < 1) {
-            return -1; // bad link?
+            return NULL; // bad link?
         }
     }
 
@@ -348,16 +352,15 @@ unsigned icmp_resolve(linkinterface_t* link,
         if (icmp_match(link, targetAddrs, addrNum,
             timeoutSec, &matchAddr, &matchIp))
         {
-            // find who we matched and place it in appropriate place
-            for (unsigned i = 0; i < addrNum; i++) {
-                if (!memcmp(targetAddrs[i].mac, matchAddr.mac, ETH_ALEN)) {
-                    memcpy(resolvedIps[i].octets, matchIp.octets, 4);
-                    resolved++;
-                }
-            }
+            if (resolved) output = (mac_ip_t*)realloc(output, ++resolved * (sizeof(mac_ip_t)));
+            else output = (mac_ip_t*)malloc(++resolved * (sizeof(mac_ip_t)));
+            memcpy(&output[resolved - 1].addr, &matchAddr, sizeof(matchAddr));
+            memcpy(&output[resolved - 1].ip, &matchIp, sizeof(matchIp));
         }
     } while (resolved < addrNum && time(NULL) < deadline);
-    return resolved;
+    
+    *resolvedNum = resolved;
+    return output;
 }
 
 int main(int argc, char** argv) {
@@ -374,23 +377,27 @@ int main(int argc, char** argv) {
 
     unsigned targetNum = argc - 2;
     mac_t* targets = (mac_t*)calloc(sizeof(mac_t), targetNum);
-    ip4addr_t* ips = (ip4addr_t*)calloc(sizeof(ip4addr_t), targetNum);
     
     for (unsigned i = 0; i < targetNum; i++) {
         parse_mac(argv[2 + i], targets[i].mac);
     }
 
-    unsigned resolved = icmp_resolve(link, targets, targetNum, 5, ips);
-    printf("Resolved: %u\n", resolved);
+    unsigned resolvedNum;
+    mac_ip_t* resolved = icmp_resolve(link, targets, targetNum, 5, &resolvedNum);
+    printf("Resolved: %u\n", resolvedNum);
 
-    for (unsigned i = 0; i < resolved; i++) {
-        output_mac(targets[i].mac);
-        printf(" -> %d.%d.%d.%d\n", ips[i].octets[0],
-            ips[i].octets[1], ips[i].octets[2], ips[i].octets[3]);
+    if (resolved) {
+        for (unsigned i = 0; i < resolvedNum; i++) {
+            output_mac(resolved[i].addr.mac);
+            printf(" -> %d.%d.%d.%d\n",
+                resolved[i].ip.octets[0],
+                resolved[i].ip.octets[1],
+                resolved[i].ip.octets[2],
+                resolved[i].ip.octets[3]
+            );
+        }
+        free(resolved);
     }
-
-    free(targets);
-    free(ips);
 
     link_free(link);
     return 0;
