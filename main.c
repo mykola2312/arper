@@ -161,7 +161,7 @@ ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
 size_t link_recv_any_from(linkinterface_t* link, 
     const uint8_t** srcAddrs, unsigned addrNum,
     uint16_t type, frame_t* frame, unsigned timeoutMilis,
-    const uint8_t* matchAddr)
+    uint8_t* matchAddr)
 {
     clock_t beginTime = clock();
     clock_t deadline = beginTime + timeoutMilis;
@@ -279,7 +279,7 @@ unsigned icmp_match(linkinterface_t* link, const uint8_t** srcAddrs, unsigned ad
 
     // we got matching Ethernet frame, let's check IP
     const struct ip* ip = (const struct ip*)frame->data;
-    if (memcmp(ip->ip_dst.s_addr, link->host_ip, 4)) {
+    if (memcmp(&ip->ip_dst.s_addr, link->host_ip, 4)) {
         // not originated to our host IP
         goto _match_bad1;
     }
@@ -288,8 +288,21 @@ unsigned icmp_match(linkinterface_t* link, const uint8_t** srcAddrs, unsigned ad
         goto _match_bad1;
     }
 
-    // shift IP header, check ICMP
-    
+    // check ICMP
+    const struct icmphdr* icmp = (const struct icmphdr*)
+        ((uint8_t*)frame->data + (ip->ip_hl * 4));
+    if (icmp->type != ICMP_ECHOREPLY) {
+        goto _match_bad1;
+    }
+
+    // so ether frame directed to us, IP direct to us
+    // and ICMP is echo reply, therefore we sure
+    // that we got right target IP
+    memcpy(matchIp, &ip->ip_src.s_addr, 4);
+
+    frame_free(frame);
+    return 1;
+
 _match_bad1:
     frame_free(frame);
     return 0;
@@ -313,10 +326,15 @@ int main(int argc, char** argv) {
     ssize_t sent = icmp_direct_broadcast(link, target, 0);
     printf("sent %ld\n", sent);
 
-    const uint8_t testMac[6] = {11, 22, 33, 44, 55, 66}; 
-
-    frame_t* test = frame_full(link);
-    printf("recv %lu\n", link_recv(link, testMac, ETHERTYPE_IP, test, 5000));
+    const uint8_t* srcAddr = &target[0];
+    uint8_t matchAddr[ETH_ALEN], matchIp[4];
+    
+    if (icmp_match(link, &srcAddr, 1, 5000, matchAddr, matchIp)) {
+        printf("Got IP address of target: %d.%d.%d.%d\n",
+            matchIp[0], matchIp[1], matchIp[2], matchIp[3]);
+    } else {
+        printf("Timeout");
+    }
 
     link_free(link);
     return 0;
