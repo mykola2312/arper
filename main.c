@@ -177,18 +177,17 @@ ssize_t link_send(linkinterface_t* link, const mac_t* dstAddr,
 
 size_t link_recv_any_from(linkinterface_t* link, 
     const mac_t* srcAddrs, unsigned addrNum,
-    uint16_t type, frame_t* frame, unsigned timeoutMilis,
+    uint16_t type, frame_t* frame, unsigned timeoutSec,
     mac_t* matchAddr)
 {
-    clock_t beginTime = clock();
-    clock_t deadline = beginTime + timeoutMilis;
+    uint64_t deadline = time(NULL) + timeoutSec;
 
     uint16_t want_type = htons(type);
     do {
         ssize_t rd = recv(link->fd, frame->data, frame->datalen, 0);
         if (rd < 0) return -1;
 
-        if (clock() > deadline) return 0; // TIMEOUT
+        if (time(NULL) > deadline) return 0; // TIMEOUT
 
         struct ether_header* ether = (struct ether_header*)frame->data;
         
@@ -286,12 +285,12 @@ ssize_t icmp_direct_broadcast(linkinterface_t* link, const mac_t* dstAddr, uint1
 
 // 0 - no match, 1 - matched
 unsigned icmp_match(linkinterface_t* link, const mac_t* srcAddrs, unsigned addrNum,
-    unsigned timeoutMillis,
+    unsigned timeoutSec,
     mac_t* matchAddr, ip4addr_t* matchIp)
 {
     frame_t* frame = frame_full(link);
     size_t recv = link_recv_any_from(link, srcAddrs, addrNum,
-        ETHERTYPE_IP, frame, timeoutMillis, matchAddr);
+        ETHERTYPE_IP, frame, timeoutSec, matchAddr);
     if (recv < 1) goto _match_bad1;
 
     // we got matching Ethernet frame, let's check IP
@@ -329,7 +328,7 @@ _match_bad1:
 // IPs set in the same order as targetAddrs ordered
 unsigned icmp_resolve(linkinterface_t* link,
     const mac_t* targetAddrs, unsigned addrNum,
-    unsigned timeoutMillis,
+    unsigned timeoutSec,
     ip4addr_t* resolvedIps)
 {
     unsigned resolved = 0;
@@ -341,13 +340,13 @@ unsigned icmp_resolve(linkinterface_t* link,
     }
 
     // receive ICMP packets as many as we match
-    clock_t deadline = clock() + timeoutMillis;
+    uint64_t deadline = time(NULL) + timeoutSec;
     do {
         mac_t matchAddr;
         ip4addr_t matchIp;
 
         if (icmp_match(link, targetAddrs, addrNum,
-            timeoutMillis, &matchAddr, &matchIp))
+            timeoutSec, &matchAddr, &matchIp))
         {
             // find who we matched and place it in appropriate place
             for (unsigned i = 0; i < addrNum; i++) {
@@ -357,7 +356,7 @@ unsigned icmp_resolve(linkinterface_t* link,
                 }
             }
         }
-    } while (resolved < addrNum && clock() < deadline);
+    } while (resolved < addrNum && time(NULL) < deadline);
     return resolved;
 }
 
@@ -381,7 +380,7 @@ int main(int argc, char** argv) {
         parse_mac(argv[2 + i], targets[i].mac);
     }
 
-    unsigned resolved = icmp_resolve(link, targets, targetNum, 5000, ips);
+    unsigned resolved = icmp_resolve(link, targets, targetNum, 5, ips);
     printf("Resolved: %u\n", resolved);
 
     for (unsigned i = 0; i < resolved; i++) {
