@@ -37,6 +37,11 @@ void print_mac(uint8_t* mac) {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+void output_mac(uint8_t* mac) {
+    printf("%02x:%02x:%02x:%02x:%02x:%02x",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 typedef struct {
     char* if_name;
     socklen_t if_len;
@@ -48,6 +53,18 @@ typedef struct {
     int if_idx;
     int if_mtu;
 } linkinterface_t;
+
+// because C has retarded array types
+typedef struct {
+    uint8_t mac[ETH_ALEN];
+} __attribute__((packed)) mac_t;
+
+typedef struct {
+    union {
+        uint32_t addr;
+        uint8_t octets[4];
+    };
+} __attribute__((packed)) ip4addr_t;
 
 typedef struct {
     uint16_t id;
@@ -131,7 +148,7 @@ void link_free(linkinterface_t* link) {
     free(link);
 }
 
-ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
+ssize_t link_send(linkinterface_t* link, const mac_t* dstAddr,
     uint16_t type, frame_t* frame)
 {
     // ETHER FRAME MUST NOT BE LESS THAN 64 (60)
@@ -143,7 +160,7 @@ ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
 
     struct ether_header* ether = (struct ether_header*)frame->data;
     memcpy(ether->ether_shost, link->host, ETH_ALEN);
-    memcpy(ether->ether_dhost, dstAddr, ETH_ALEN);
+    memcpy(ether->ether_dhost, dstAddr->mac, ETH_ALEN);
     ether->ether_type = htons(type);
 
     struct sockaddr_ll ll_addr = {0};
@@ -159,9 +176,9 @@ ssize_t link_send(linkinterface_t* link, const uint8_t* dstAddr,
 }
 
 size_t link_recv_any_from(linkinterface_t* link, 
-    const uint8_t** srcAddrs, unsigned addrNum,
+    const mac_t* srcAddrs, unsigned addrNum,
     uint16_t type, frame_t* frame, unsigned timeoutMilis,
-    uint8_t* matchAddr)
+    mac_t* matchAddr)
 {
     clock_t beginTime = clock();
     clock_t deadline = beginTime + timeoutMilis;
@@ -177,11 +194,11 @@ size_t link_recv_any_from(linkinterface_t* link,
         
         unsigned matches = 0;
         for (unsigned i = 0; i < addrNum; i++) {
-            if (!memcmp(ether->ether_shost, srcAddrs[i], ETH_ALEN)) {
+            if (!memcmp(ether->ether_shost, srcAddrs[i].mac, ETH_ALEN)) {
                 matches = 1;
 
                 if (matchAddr) {
-                    memcpy(matchAddr, ether->ether_shost, ETH_ALEN);
+                    memcpy(matchAddr->mac, ether->ether_shost, ETH_ALEN);
                 }
                 break;
             }
@@ -214,8 +231,8 @@ uint16_t checksum(const uint8_t* data, size_t len) {
     return ~((uint16_t)sum);
 }
 
-ssize_t ip_send(linkinterface_t* link, const uint8_t* dstAddr,
-    const uint8_t* dstIp, uint8_t proto, frame_t* frame)
+ssize_t ip_send(linkinterface_t* link, const mac_t* dstAddr,
+    const ip4addr_t dstIp, uint8_t proto, frame_t* frame)
 {
     // shift data to add space for IP header
     size_t oldlen = frame->datalen;
@@ -234,14 +251,14 @@ ssize_t ip_send(linkinterface_t* link, const uint8_t* dstAddr,
     ip->ip_p = proto;
     ip->ip_sum = 0;
     memcpy(&ip->ip_src, link->host_ip, 4);
-    memcpy(&ip->ip_dst, dstIp, 4);
+    memcpy(&ip->ip_dst, dstIp.octets, 4);
     // calculate header checksum
     ip->ip_sum = checksum((const uint8_t*)frame->data, sizeof(struct ip));
 
     return link_send(link, dstAddr, ETHERTYPE_IP, frame);
 }
 
-ssize_t icmp_direct_broadcast(linkinterface_t* link, const uint8_t* dstAddr, uint16_t seq) {
+ssize_t icmp_direct_broadcast(linkinterface_t* link, const mac_t* dstAddr, uint16_t seq) {
     size_t hdrlen = sizeof(struct icmphdr);
     const size_t payloadlen = 20;
 
@@ -260,7 +277,7 @@ ssize_t icmp_direct_broadcast(linkinterface_t* link, const uint8_t* dstAddr, uin
 
     icmp->checksum = checksum((const uint8_t*)frame->data, hdrlen + payloadlen);
 
-    const uint8_t ip_broadcast[4] = {255, 255, 255, 255};
+    const ip4addr_t ip_broadcast = { .addr = 0xFFFFFFFF };
     size_t sent = ip_send(link, dstAddr, ip_broadcast, IPPROTO_ICMP, frame);
     
     frame_free(frame);
@@ -268,9 +285,9 @@ ssize_t icmp_direct_broadcast(linkinterface_t* link, const uint8_t* dstAddr, uin
 }
 
 // 0 - no match, 1 - matched
-unsigned icmp_match(linkinterface_t* link, const uint8_t** srcAddrs, unsigned addrNum,
+unsigned icmp_match(linkinterface_t* link, const mac_t* srcAddrs, unsigned addrNum,
     unsigned timeoutMillis,
-    uint8_t* matchAddr, uint8_t* matchIp)
+    mac_t* matchAddr, ip4addr_t* matchIp)
 {
     frame_t* frame = frame_full(link);
     size_t recv = link_recv_any_from(link, srcAddrs, addrNum,
@@ -298,7 +315,7 @@ unsigned icmp_match(linkinterface_t* link, const uint8_t** srcAddrs, unsigned ad
     // so ether frame directed to us, IP direct to us
     // and ICMP is echo reply, therefore we sure
     // that we got right target IP
-    memcpy(matchIp, &ip->ip_src.s_addr, 4);
+    memcpy(matchIp->octets, &ip->ip_src.s_addr, 4);
 
     frame_free(frame);
     return 1;
@@ -308,8 +325,46 @@ _match_bad1:
     return 0;
 }
 
+// returns number of resolved IP addresses. `resolvedIps` must be capacity of addrNum,
+// IPs set in the same order as targetAddrs ordered
+unsigned icmp_resolve(linkinterface_t* link,
+    const mac_t* targetAddrs, unsigned addrNum,
+    unsigned timeoutMillis,
+    ip4addr_t* resolvedIps)
+{
+    unsigned resolved = 0;
+    // sent ICMP packets
+    for (unsigned i = 0; i < addrNum; i++) {
+        if (icmp_direct_broadcast(link, &targetAddrs[i], 0) < 1) {
+            return -1; // bad link?
+        }
+    }
+
+    // receive ICMP packets as many as we match
+    clock_t deadline = clock() + timeoutMillis;
+    do {
+        mac_t matchAddr;
+        ip4addr_t matchIp;
+
+        if (icmp_match(link, targetAddrs, addrNum,
+            timeoutMillis, &matchAddr, &matchIp))
+        {
+            // find who we matched and place it in appropriate place
+            for (unsigned i = 0; i < addrNum; i++) {
+                if (!memcmp(targetAddrs[i].mac, matchAddr.mac, ETH_ALEN)) {
+                    memcpy(resolvedIps[i].octets, matchIp.octets, 4);
+                    resolved++;
+                }
+            }
+        }
+    } while (resolved < addrNum && clock() < deadline);
+    return resolved;
+}
+
 int main(int argc, char** argv) {
-    // ifname targetMAC
+    // ifname targetMAC1 targetMAC2 ...
+    srand(time(NULL)); 
+
     linkinterface_t* link = link_open(argv[1]);
     if (!link) {
         perror("link_open");
@@ -318,23 +373,25 @@ int main(int argc, char** argv) {
     print_mac(link->host);
     printf("MTU: %d\n", link->if_mtu);
 
-    uint8_t target[ETH_ALEN];
-    parse_mac(argv[2], target);
-
-    srand(time(NULL));
-
-    ssize_t sent = icmp_direct_broadcast(link, target, 0);
-    printf("sent %ld\n", sent);
-
-    const uint8_t* srcAddr = &target[0];
-    uint8_t matchAddr[ETH_ALEN], matchIp[4];
+    unsigned targetNum = argc - 2;
+    mac_t* targets = (mac_t*)calloc(sizeof(mac_t), targetNum);
+    ip4addr_t* ips = (ip4addr_t*)calloc(sizeof(ip4addr_t), targetNum);
     
-    if (icmp_match(link, &srcAddr, 1, 5000, matchAddr, matchIp)) {
-        printf("Got IP address of target: %d.%d.%d.%d\n",
-            matchIp[0], matchIp[1], matchIp[2], matchIp[3]);
-    } else {
-        printf("Timeout");
+    for (unsigned i = 0; i < targetNum; i++) {
+        parse_mac(argv[2 + i], targets[i].mac);
     }
+
+    unsigned resolved = icmp_resolve(link, targets, targetNum, 5000, ips);
+    printf("Resolved: %u\n", resolved);
+
+    for (unsigned i = 0; i < resolved; i++) {
+        output_mac(targets[i].mac);
+        printf(" -> %d.%d.%d.%d\n", ips[i].octets[0],
+            ips[i].octets[1], ips[i].octets[2], ips[i].octets[3]);
+    }
+
+    free(targets);
+    free(ips);
 
     link_free(link);
     return 0;
