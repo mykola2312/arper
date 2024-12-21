@@ -214,7 +214,7 @@ size_t link_recv_any_from(linkinterface_t* link,
         // shift back ether header and realloc
         frame->datalen = rd - sizeof(struct ether_header);
         memmove(frame->data, (const uint8_t*)frame->data + sizeof(struct ether_header), frame->datalen);
-        frame = realloc(frame->data, frame->datalen);
+        frame->data = realloc(frame->data, frame->datalen);
 
         return frame->datalen;
     } while (1);
@@ -361,7 +361,7 @@ unsigned icmp_resolve(linkinterface_t* link,
 }
 
 int main(int argc, char** argv) {
-    // ifname targetMAC1 targetMAC2 ...
+    // arper ifname targetMAC1 targetMAC2 ...
     srand(time(NULL)); 
 
     linkinterface_t* link = link_open(argv[1]);
